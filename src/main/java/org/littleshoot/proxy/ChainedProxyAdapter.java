@@ -3,8 +3,12 @@ package org.littleshoot.proxy;
 import io.netty.handler.codec.http.HttpObject;
 
 import java.net.InetSocketAddress;
+import java.util.Map;
+import java.util.Set;
 
 import javax.net.ssl.SSLEngine;
+
+import org.littleshoot.proxy.extras.DataHolder;
 
 /**
  * Convenience base class for implementations of {@link ChainedProxy}.
@@ -56,4 +60,29 @@ public class ChainedProxyAdapter implements ChainedProxy {
     @Override
     public void disconnected() {
     }
+
+	@Override
+	public Map<String, Object> data() {
+		return null;
+	}
+
+	@Override
+	public Object data(String key) {
+		return null;
+	}
+
+	@Override
+	public DataHolder data(String key, Object value) {
+		return null;
+	}
+
+	@Override
+	public Set<String> dataKeys() {
+		return null;
+	}
+
+	@Override
+	public boolean isFallbackToDirect() {
+		return true;
+	}
 }

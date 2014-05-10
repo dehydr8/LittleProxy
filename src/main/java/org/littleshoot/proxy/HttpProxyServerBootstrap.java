@@ -2,6 +2,8 @@ package org.littleshoot.proxy;
 
 import java.net.InetSocketAddress;
 
+import org.littleshoot.proxy.extras.BandwidthManager;
+
 /**
  * Configures and starts an {@link HttpProxyServer}. The HttpProxyServer is
  * built using {@link #start()}. Sensible defaults are available for all
@@ -164,6 +166,10 @@ public interface HttpProxyServerBootstrap {
      */
     HttpProxyServerBootstrap withChainProxyManager(
             ChainedProxyManager chainProxyManager);
+    
+    HttpProxyServerBootstrap withBandwidthManager(
+            BandwidthManager bandwidthManager);
+    
 
     /**
      * <p>

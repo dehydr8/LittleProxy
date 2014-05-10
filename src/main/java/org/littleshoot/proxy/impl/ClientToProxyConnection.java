@@ -18,6 +18,7 @@ import io.netty.handler.codec.http.HttpResponseEncoder;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.timeout.IdleStateHandler;
+import io.netty.handler.traffic.GlobalTrafficShapingHandler;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 
@@ -114,6 +115,8 @@ public class ClientToProxyConnection extends ProxyConnection<HttpRequest> {
     private volatile HttpFilters currentFilters;
 
     private volatile SSLSession clientSslSession;
+    
+    private final GlobalTrafficShapingHandler trafficHandler;
 
     /**
      * Tracks whether or not this ClientToProxyConnection is current doing MITM.
@@ -126,9 +129,11 @@ public class ClientToProxyConnection extends ProxyConnection<HttpRequest> {
             final DefaultHttpProxyServer proxyServer,
             SslEngineSource sslEngineSource,
             boolean authenticateClients,
-            ChannelPipeline pipeline) {
+            ChannelPipeline pipeline, GlobalTrafficShapingHandler trafficHandler) {
         super(AWAITING_INITIAL, proxyServer, false);
 
+        this.trafficHandler = trafficHandler;
+        
         initChannelPipeline(pipeline);
 
         if (sslEngineSource != null) {
@@ -150,7 +155,7 @@ public class ClientToProxyConnection extends ProxyConnection<HttpRequest> {
                             });
         }
 
-        LOG.debug("Created ClientToProxyConnection");
+        LOG.debug("Created ClientToProxyConnection with Traffic Handler: " + trafficHandler);
     }
 
     /***************************************************************************
@@ -236,7 +241,8 @@ public class ClientToProxyConnection extends ProxyConnection<HttpRequest> {
                         proxyServer,
                         this,
                         serverHostAndPort,
-                        httpRequest);
+                        httpRequest,
+                        trafficHandler);
                 if (currentServerConnection == null) {
                     LOG.debug("Unable to create server connection, probably no chained proxies available");
                     writeBadGateway(httpRequest);
@@ -619,6 +625,7 @@ public class ClientToProxyConnection extends ProxyConnection<HttpRequest> {
     private void initChannelPipeline(ChannelPipeline pipeline) {
         LOG.debug("Configuring ChannelPipeline");
 
+    	
         pipeline.addLast("bytesReadMonitor", bytesReadMonitor);
         // We want to allow longer request lines, headers, and chunks
         // respectively.
@@ -632,17 +639,24 @@ public class ClientToProxyConnection extends ProxyConnection<HttpRequest> {
         if (numberOfBytesToBuffer > 0) {
             aggregateContentForFiltering(pipeline, numberOfBytesToBuffer);
         }
+        
+
 
         pipeline.addLast("bytesWrittenMonitor", bytesWrittenMonitor);
         pipeline.addLast("encoder", new HttpResponseEncoder());
         pipeline.addLast("responseWrittenMonitor", responseWrittenMonitor);
 
+    	pipeline.addLast("trafficShaper", trafficHandler);
+    	
         pipeline.addLast(
                 "idle",
                 new IdleStateHandler(0, 0, proxyServer
                         .getIdleConnectionTimeout()));
 
         pipeline.addLast("handler", this);
+
+    	
+        LOG.debug("Added trafficShaper to pipeline. "  + trafficHandler);
     }
 
     /**

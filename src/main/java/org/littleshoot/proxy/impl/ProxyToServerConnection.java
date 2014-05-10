@@ -1,6 +1,11 @@
 package org.littleshoot.proxy.impl;
 
-import static org.littleshoot.proxy.impl.ConnectionState.*;
+import static org.littleshoot.proxy.impl.ConnectionState.AWAITING_CHUNK;
+import static org.littleshoot.proxy.impl.ConnectionState.AWAITING_CONNECT_OK;
+import static org.littleshoot.proxy.impl.ConnectionState.AWAITING_INITIAL;
+import static org.littleshoot.proxy.impl.ConnectionState.CONNECTING;
+import static org.littleshoot.proxy.impl.ConnectionState.DISCONNECTED;
+import static org.littleshoot.proxy.impl.ConnectionState.HANDSHAKING;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ChannelFactory;
 import io.netty.buffer.ByteBuf;
@@ -20,6 +25,7 @@ import io.netty.handler.codec.http.HttpRequestEncoder;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseDecoder;
 import io.netty.handler.timeout.IdleStateHandler;
+import io.netty.handler.traffic.GlobalTrafficShapingHandler;
 import io.netty.util.ReferenceCounted;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
@@ -30,13 +36,13 @@ import java.net.UnknownHostException;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executors;
 
 import javax.net.ssl.SSLSession;
 
 import org.apache.commons.lang3.StringUtils;
 import org.littleshoot.proxy.ActivityTracker;
 import org.littleshoot.proxy.ChainedProxy;
-import org.littleshoot.proxy.ChainedProxyAdapter;
 import org.littleshoot.proxy.ChainedProxyManager;
 import org.littleshoot.proxy.FullFlowContext;
 import org.littleshoot.proxy.HttpFilters;
@@ -113,6 +119,8 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
      * HttpResponse object for our transfer (which is useful for its headers).
      */
     private volatile HttpResponse currentHttpResponse;
+    
+    private final GlobalTrafficShapingHandler trafficHandler;
 
     /**
      * Create a new ProxyToServerConnection.
@@ -128,7 +136,7 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
     static ProxyToServerConnection create(DefaultHttpProxyServer proxyServer,
             ClientToProxyConnection clientConnection,
             String serverHostAndPort,
-            HttpRequest initialHttpRequest)
+            HttpRequest initialHttpRequest, GlobalTrafficShapingHandler trafficHandler)
             throws UnknownHostException {
         Queue<ChainedProxy> chainedProxies = new ConcurrentLinkedQueue<ChainedProxy>();
         ChainedProxyManager chainedProxyManager = proxyServer
@@ -142,7 +150,7 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
             }
         }
         return new ProxyToServerConnection(proxyServer, clientConnection,
-                serverHostAndPort, chainedProxies.poll(), chainedProxies);
+                serverHostAndPort, chainedProxies.poll(), chainedProxies, trafficHandler);
     }
 
     private ProxyToServerConnection(
@@ -150,14 +158,17 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
             ClientToProxyConnection clientConnection,
             String serverHostAndPort,
             ChainedProxy chainedProxy,
-            Queue<ChainedProxy> availableChainedProxies)
+            Queue<ChainedProxy> availableChainedProxies, GlobalTrafficShapingHandler trafficHandler)
             throws UnknownHostException {
         super(DISCONNECTED, proxyServer, true);
         this.clientConnection = clientConnection;
         this.serverHostAndPort = serverHostAndPort;
         this.chainedProxy = chainedProxy;
         this.availableChainedProxies = availableChainedProxies;
+        this.trafficHandler = trafficHandler;
         setupConnectionParameters();
+
+        LOG.debug("Created ProxyToServerConnection with Traffic Handler: " + trafficHandler);
     }
 
     /***************************************************************************
@@ -663,7 +674,7 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
      */
     private void setupConnectionParameters() throws UnknownHostException {
         if (chainedProxy != null
-                && chainedProxy != ChainedProxyAdapter.FALLBACK_TO_DIRECT_CONNECTION) {
+                && !chainedProxy.isFallbackToDirect()) {
             this.transportProtocol = chainedProxy.getTransportProtocol();
             this.remoteAddress = chainedProxy.getChainedProxyAddress();
             this.localAddress = chainedProxy.getLocalAddress();
@@ -682,6 +693,8 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
      */
     private void initChannelPipeline(ChannelPipeline pipeline,
             HttpRequest httpRequest) {
+
+    	
         pipeline.addLast("bytesReadMonitor", bytesReadMonitor);
         pipeline.addLast("decoder", new HeadAwareHttpResponseDecoder(
                 8192,
@@ -698,10 +711,14 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
             }
         }
 
+
+    	
         pipeline.addLast("bytesWrittenMonitor", bytesWrittenMonitor);
         pipeline.addLast("encoder", new HttpRequestEncoder());
         pipeline.addLast("requestWrittenMonitor", requestWrittenMonitor);
 
+    	pipeline.addLast("trafficShaper", trafficHandler);
+    	
         // Set idle timeout
         pipeline.addLast(
                 "idle",
@@ -709,6 +726,8 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
                         .getIdleConnectionTimeout()));
 
         pipeline.addLast("handler", this);
+        
+        LOG.debug("Added trafficShaper to pipeline. "  + trafficHandler);
     }
 
     /**

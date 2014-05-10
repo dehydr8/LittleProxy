@@ -4,6 +4,8 @@ import io.netty.handler.codec.http.HttpObject;
 
 import java.net.InetSocketAddress;
 
+import org.littleshoot.proxy.extras.DataHolder;
+
 /**
  * <p>
  * Encapsulates information needed to connect to a chained proxy.
@@ -14,7 +16,7 @@ import java.net.InetSocketAddress;
  * defaults.
  * </p>
  */
-public interface ChainedProxy extends SslEngineSource {
+public interface ChainedProxy extends SslEngineSource, DataHolder {
     /**
      * Return the {@link InetSocketAddress} for connecting to the chained proxy.
      * Returning null indicates that we won't chain.
@@ -73,4 +75,9 @@ public interface ChainedProxy extends SslEngineSource {
      * Called to let us know that we were disconnected.
      */
     void disconnected();
+    
+    /**
+     * @return true, if it is to be treated as a fallback to direct conection
+     */
+    boolean isFallbackToDirect();
 }

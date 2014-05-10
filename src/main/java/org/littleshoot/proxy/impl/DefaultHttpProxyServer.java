@@ -16,6 +16,9 @@ import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.udt.nio.NioUdtProvider;
+import io.netty.handler.traffic.GlobalTrafficShapingHandler;
+import io.netty.util.concurrent.EventExecutor;
+import io.netty.util.concurrent.EventExecutorGroup;
 import io.netty.util.concurrent.GlobalEventExecutor;
 
 import java.io.File;
@@ -55,6 +58,9 @@ import org.littleshoot.proxy.ProxyAuthenticator;
 import org.littleshoot.proxy.SslEngineSource;
 import org.littleshoot.proxy.TransportProtocol;
 import org.littleshoot.proxy.UnknownTransportProtocolError;
+import org.littleshoot.proxy.extras.BandwidthManager;
+import org.littleshoot.proxy.extras.BandwidthManagerAdapter;
+import org.littleshoot.proxy.extras.GlobalBandwidthShaper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -95,6 +101,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
     private final boolean authenticateSslClients;
     private final ProxyAuthenticator proxyAuthenticator;
     private final ChainedProxyManager chainProxyManager;
+    private final BandwidthManager bandwidthManager;
     private final MitmManager mitmManager;
     private final HttpFiltersSource filtersSource;
     private final boolean transparent;
@@ -154,12 +161,13 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
             boolean transparent,
             int idleConnectionTimeout,
             Collection<ActivityTracker> activityTrackers,
+            BandwidthManager bandwidthManager,
             int connectTimeout, HostResolver serverResolver) {
         this(new ServerGroup(name), transportProtocol, address,
                 sslEngineSource, authenticateSslClients, proxyAuthenticator,
                 chainProxyManager,
                 mitmManager, filterSource, transparent,
-                idleConnectionTimeout, activityTrackers, connectTimeout,
+                idleConnectionTimeout, activityTrackers, bandwidthManager, connectTimeout,
                 serverResolver);
     }
 
@@ -215,6 +223,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
             boolean transparent,
             int idleConnectionTimeout,
             Collection<ActivityTracker> activityTrackers,
+            BandwidthManager bandwidthManager,
             int connectTimeout,
             HostResolver serverResolver) {
         this.serverGroup = serverGroup;
@@ -231,6 +240,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
         if (activityTrackers != null) {
             this.activityTrackers.addAll(activityTrackers);
         }
+        this.bandwidthManager = bandwidthManager;
         this.connectTimeout = connectTimeout;
         this.serverResolver = serverResolver;
     }
@@ -268,7 +278,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
                 sslEngineSource, authenticateSslClients, proxyAuthenticator,
                 chainProxyManager,
                 mitmManager, filtersSource, transparent,
-                idleConnectionTimeout, activityTrackers, connectTimeout,
+                idleConnectionTimeout, activityTrackers, bandwidthManager, connectTimeout,
                 serverResolver);
     }
 
@@ -295,14 +305,22 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
         ServerBootstrap serverBootstrap = new ServerBootstrap().group(
                 serverGroup.clientToProxyBossPools.get(transportProtocol),
                 serverGroup.clientToProxyWorkerPools.get(transportProtocol));
+        
+		final GlobalTrafficShapingHandler trafficHandler = new GlobalBandwidthShaper(
+				(EventExecutorGroup) serverGroup.trafficShapingPools.get(transportProtocol),
+				bandwidthManager.upstream(),
+				bandwidthManager.downstream(), 1000);
 
         ChannelInitializer<Channel> initializer = new ChannelInitializer<Channel>() {
             protected void initChannel(Channel ch) throws Exception {
+            	
+            	
                 new ClientToProxyConnection(
                         DefaultHttpProxyServer.this,
                         sslEngineSource,
                         authenticateSslClients,
-                        ch.pipeline());
+                        ch.pipeline(),
+                        trafficHandler);
             };
         };
         switch (transportProtocol) {
@@ -412,6 +430,11 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
          */
         private final Map<TransportProtocol, EventLoopGroup> proxyToServerWorkerPools = new ConcurrentHashMap<TransportProtocol, EventLoopGroup>();
 
+        /**
+         * These {@link EventLoopGroup}s are used for traffic shaping
+         */
+        private final Map<TransportProtocol, EventLoopGroup> trafficShapingPools = new ConcurrentHashMap<TransportProtocol, EventLoopGroup>();
+
         private volatile boolean stopped = false;
 
         private ServerGroup(String name) {
@@ -469,12 +492,20 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
                     new CategorizedThreadFactory("ProxyToServerWorker"),
                     selectorProvider);
             outboundWorkerGroup.setIoRatio(90);
+            NioEventLoopGroup trafficShapingGroup = new NioEventLoopGroup(
+                    OUTGOING_WORKER_THREADS,
+                    new CategorizedThreadFactory("TrafficShapingWorker"),
+                    selectorProvider);
+            //trafficShapingGroup.setIoRatio(90);
+            
             this.clientToProxyBossPools.put(transportProtocol,
                     inboundAcceptorGroup);
             this.clientToProxyWorkerPools.put(transportProtocol,
                     inboundWorkerGroup);
             this.proxyToServerWorkerPools.put(transportProtocol,
                     outboundWorkerGroup);
+			this.trafficShapingPools.put(transportProtocol,
+					trafficShapingGroup);
         }
 
         synchronized private void stop() {
@@ -507,6 +538,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
             allEventLoopGroups.addAll(clientToProxyBossPools.values());
             allEventLoopGroups.addAll(clientToProxyWorkerPools.values());
             allEventLoopGroups.addAll(proxyToServerWorkerPools.values());
+            allEventLoopGroups.addAll(trafficShapingPools.values());
             for (EventLoopGroup group : allEventLoopGroups) {
                 group.shutdownGracefully();
             }
@@ -545,6 +577,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
             HttpProxyServerBootstrap {
         private String name = "LittleProxy";
         private TransportProtocol transportProtocol = TCP;
+        
         private InetSocketAddress address;
         private int port = 8080;
         private boolean allowLocalOnly = true;
@@ -559,6 +592,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
         private int idleConnectionTimeout = 70;
         private DefaultHttpProxyServer original;
         private Collection<ActivityTracker> activityTrackers = new ConcurrentLinkedQueue<ActivityTracker>();
+        private BandwidthManager bandwidthManager = new BandwidthManagerAdapter();
         private int connectTimeout = 40000;
         private HostResolver serverResolver = new DefaultHostResolver();
 
@@ -577,6 +611,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
                 HttpFiltersSource filtersSource,
                 boolean transparent, int idleConnectionTimeout,
                 Collection<ActivityTracker> activityTrackers,
+                BandwidthManager bandwidthManager,
                 int connectTimeout, HostResolver serverResolver) {
             this.original = original;
             this.transportProtocol = transportProtocol;
@@ -592,6 +627,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
             if (activityTrackers != null) {
                 this.activityTrackers.addAll(activityTrackers);
             }
+            this.bandwidthManager = bandwidthManager;
             this.connectTimeout = connectTimeout;
             this.serverResolver = serverResolver;
         }
@@ -618,6 +654,13 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
                 TransportProtocol transportProtocol) {
             this.transportProtocol = transportProtocol;
             return this;
+        }
+        
+        @Override
+        public HttpProxyServerBootstrap withBandwidthManager(
+        		BandwidthManager bandwidthManager) {
+        	this.bandwidthManager = bandwidthManager;
+        	return this;
         }
 
         @Override
@@ -754,7 +797,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
                         sslEngineSource, authenticateSslClients,
                         proxyAuthenticator, chainProxyManager, mitmManager,
                         filtersSource, transparent,
-                        idleConnectionTimeout, activityTrackers, connectTimeout,
+                        idleConnectionTimeout, activityTrackers, bandwidthManager, connectTimeout,
                         serverResolver);
             } else {
                 return new DefaultHttpProxyServer(
@@ -762,7 +805,7 @@ public class DefaultHttpProxyServer implements HttpProxyServer {
                         sslEngineSource, authenticateSslClients,
                         proxyAuthenticator, chainProxyManager, mitmManager,
                         filtersSource, transparent,
-                        idleConnectionTimeout, activityTrackers, connectTimeout,
+                        idleConnectionTimeout, activityTrackers, bandwidthManager, connectTimeout,
                         serverResolver);
             }
         }
