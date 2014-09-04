@@ -36,7 +36,6 @@ import java.net.UnknownHostException;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Executors;
 
 import javax.net.ssl.SSLSession;
 
@@ -717,7 +716,7 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
         pipeline.addLast("encoder", new HttpRequestEncoder());
         pipeline.addLast("requestWrittenMonitor", requestWrittenMonitor);
 
-    	pipeline.addLast("trafficShaper", trafficHandler);
+    	//pipeline.addLast("trafficShaper", trafficHandler);
     	
         // Set idle timeout
         pipeline.addLast(

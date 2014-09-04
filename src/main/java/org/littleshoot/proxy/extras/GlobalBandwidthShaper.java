@@ -19,7 +19,7 @@ public class GlobalBandwidthShaper extends GlobalTrafficShapingHandler {
 	@Override
 	protected void doAccounting(TrafficCounter counter) {
 		super.doAccounting(counter);
-		logger.info("trafficShaper " + this);
+		//logger.info("trafficShaper " + this);
 	}
 
 	@Override

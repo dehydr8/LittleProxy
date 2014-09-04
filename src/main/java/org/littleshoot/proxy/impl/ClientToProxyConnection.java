@@ -646,7 +646,7 @@ public class ClientToProxyConnection extends ProxyConnection<HttpRequest> {
         pipeline.addLast("encoder", new HttpResponseEncoder());
         pipeline.addLast("responseWrittenMonitor", responseWrittenMonitor);
 
-    	pipeline.addLast("trafficShaper", trafficHandler);
+    	//pipeline.addLast("trafficShaper", trafficHandler);
     	
         pipeline.addLast(
                 "idle",
